@@ -2,6 +2,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from contextlib import asynccontextmanager
 import uvicorn
 import os
 
@@ -9,31 +10,9 @@ import os
 load_dotenv()
 
 # Create FastAPI application
-app = FastAPI(
-    title="Employee Assistant AI",
-    description="An AI-powered system for employee task management, email processing, and automation",
-    version="1.0.0"
-)
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Import routers and database
-from app.api import api_router
-from app.database.database import init_database, close_database, check_database_connection
-
-# Include API router
-app.include_router(api_router)
-
-# Startup event
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
     print("Starting Employee Assistant AI...")
     print("=" * 50)
     
@@ -50,7 +29,6 @@ async def startup_event():
     else:
         print("Database connection: FAILED")
     
-    print("=" * 50)
     print("Features available:")
     print("1. Natural Language Query Processing")
     print("2. Task Management System")
@@ -60,12 +38,35 @@ async def startup_event():
     print("=" * 50)
     print("API Documentation: http://localhost:8000/docs")
     print("=" * 50)
-
-# Shutdown event
-@app.on_event("shutdown")
-async def shutdown_event():
+    
+    yield
+    
+    # Shutdown
     print("Shutting down Employee Assistant AI...")
     close_database()
+
+app = FastAPI(
+    title="Employee Assistant AI",
+    description="An AI-powered system for employee task management, email processing, and automation",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Import routers and database
+from app.api import api_router
+from app.database.database import init_database, check_database_connection, close_database
+
+# Include API router
+app.include_router(api_router)
 
 @app.get("/")
 async def root():

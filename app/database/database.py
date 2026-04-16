@@ -75,8 +75,9 @@ def close_database():
 def check_database_connection():
     try:
         # Try to execute a simple query
+        from sqlalchemy import text
         with engine.connect() as connection:
-            connection.execute("SELECT 1")
+            connection.execute(text("SELECT 1"))
         
         logger.info("Database connection check: SUCCESS")
         return True

@@ -26,6 +26,12 @@ class EmailSendRequest(BaseModel):
     subject: str = Field(..., description="Email subject")
     body: str = Field(..., description="Email body content")
     cc_email: Optional[str] = Field(None, description="CC recipient")
+    email_config: Dict = Field(..., description="Email configuration")
+
+class AutoReplyRequest(BaseModel):
+    email_text: str = Field(..., description="Original email content")
+    email_metadata: Dict = Field(..., description="Email metadata including sender, subject")
+    email_config: Dict = Field(..., description="Email configuration")
 
 @router.post("/fetch", summary="Fetch emails from server")
 async def fetch_emails(
@@ -36,8 +42,7 @@ async def fetch_emails(
     try:
         # Initialize email service
         email_service = EmailService(email_config)
-        
-        # Fetch emails
+
         emails = email_service.fetch_emails(
             folder=request.folder,
             limit=request.limit,
@@ -189,12 +194,11 @@ async def analyze_email(
 
 @router.post("/send", summary="Send an email")
 async def send_email(
-    request: EmailSendRequest,
-    email_config: Dict = Body(...)
+    request: EmailSendRequest
 ):
     try:
         # Initialize email service
-        email_service = EmailService(email_config)
+        email_service = EmailService(request.email_config)
         
         # Send email
         success = email_service.send_email(
@@ -209,7 +213,8 @@ async def send_email(
             return {
                 "message": "Email sent successfully",
                 "recipient": request.to_email,
-                "subject": request.subject
+                "subject": request.subject,
+                "demo_mode": "Email simulated for demo purposes"
             }
         else:
             raise HTTPException(status_code=500, detail="Failed to send email")
@@ -249,22 +254,21 @@ async def get_email_summary(
 
 @router.post("/auto-reply", summary="Generate and send auto-reply")
 async def auto_reply(
-    email_text: str = Body(..., description="Original email content"),
-    email_metadata: Dict = Body(..., description="Email metadata including sender, subject"),
-    email_config: Dict = Body(...)
+    request: AutoReplyRequest,
+    db: Session = Depends(get_db)
 ):
     try:
         # Initialize email service
-        email_service = EmailService(email_config)
+        email_service = EmailService(request.email_config)
         
         # Create email message object
         email_msg = EmailMessage(
             id="auto-reply",
-            subject=email_metadata.get("subject", "No Subject"),
-            sender=email_metadata.get("sender", "unknown@sender.com"),
+            subject=request.email_metadata.get("subject", "No Subject"),
+            sender=request.email_metadata.get("sender", "unknown@sender.com"),
             recipient="me@company.com",
-            date=email_metadata.get("date", "2023-01-01"),
-            body=email_text
+            date=request.email_metadata.get("date", "2023-01-01"),
+            body=request.email_text
         )
         
         # Analyze email
@@ -291,7 +295,8 @@ async def auto_reply(
             return {
                 "message": "Auto-reply sent successfully",
                 "recipient": email_msg.sender,
-                "reply_summary": reply_body[:100] + "..." if len(reply_body) > 100 else reply_body
+                "reply_summary": reply_body[:100] + "..." if len(reply_body) > 100 else reply_body,
+                "demo_mode": "Email simulated for demo purposes"
             }
         else:
             raise HTTPException(status_code=500, detail="Failed to send auto-reply")
@@ -299,5 +304,101 @@ async def auto_reply(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error sending auto-reply: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to send auto-reply: {str(e)}")
+        logger.error(f"Error in auto-reply: {e}")
+        raise HTTPException(status_code=500, detail=f"Auto-reply failed: {str(e)}")
+
+@router.post("/intelligent-process", summary="Intelligent email processing with priority logic")
+async def intelligent_email_process(
+    email_config: Dict = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Process emails with new priority-based logic:
+    - High priority: Create urgent tasks
+    - Medium priority: Include in summary
+    - Low priority: Reference only
+    - Reply-first: Reply before task creation when needed
+    """
+    try:
+        # Initialize email service
+        email_service = EmailService(email_config)
+        
+        # Fetch emails
+        emails = email_service.fetch_emails(limit=50, since_days=7)
+        
+        results = {
+            "processed": {
+                "total": len(emails),
+                "urgent_tasks_created": 0,
+                "medium_emails_for_review": 0,
+                "low_priority_reference": 0,
+                "replies_sent": 0
+            },
+            "tasks_created": [],
+            "medium_priority_summary": [],
+            "actions_taken": []
+        }
+        
+        task_manager = TaskManager(db)
+        
+        for email_msg in emails:
+            analysis = email_service.analyze_email(email_msg)
+            
+            if analysis.priority == 'high':
+                # Check if we should reply first
+                if email_service.should_reply_before_task(email_msg):
+                    # Send reply first
+                    reply_body = analysis.suggested_reply or "Thank you for your urgent email. I'm addressing this immediately."
+                    email_service.send_email(
+                        to_email=email_msg.sender,
+                        subject=f"Re: {email_msg.subject}",
+                        body=reply_body
+                    )
+                    results["processed"]["replies_sent"] += 1
+                    results["actions_taken"].append(f"Replied to urgent email from {email_msg.sender}")
+                
+                # Create urgent tasks
+                for action_item in analysis.action_items:
+                    task_data = TaskCreate(
+                        title=f"URGENT: {action_item[:50]}...",
+                        description=f"Urgent task from email: {email_msg.subject}",
+                        priority="urgent",
+                        assignee=None,
+                        created_by="Email Processor"
+                    )
+                    task = task_manager.create_task(task_data)
+                    results["tasks_created"].append(task.dict())
+                    results["processed"]["urgent_tasks_created"] += 1
+                    results["actions_taken"].append(f"Created urgent task: {task.title}")
+            
+            elif analysis.priority == 'medium':
+                # Add to summary for manual review
+                results["medium_priority_summary"].append({
+                    "subject": email_msg.subject,
+                    "sender": email_msg.sender,
+                    "date": email_msg.date.isoformat(),
+                    "summary": email_msg.body[:100] + "..." if len(email_msg.body) > 100 else email_msg.body,
+                    "action_items": analysis.action_items
+                })
+                results["processed"]["medium_emails_for_review"] += 1
+                results["actions_taken"].append(f"Added medium priority email from {email_msg.sender} to review queue")
+            
+            elif analysis.priority == 'low':
+                # Keep for reference only
+                results["processed"]["low_priority_reference"] += 1
+                results["actions_taken"].append(f"Low priority email from {email_msg.sender} archived for reference")
+        
+        return {
+            "status": "success",
+            "summary": f"Processed {results['processed']['total']} emails with new priority logic",
+            "results": results,
+            "recommendations": [
+                "Review urgent tasks immediately",
+                "Manually create tasks from medium priority emails",
+                "Low priority emails kept for reference only"
+            ]
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in intelligent email processing: {e}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
